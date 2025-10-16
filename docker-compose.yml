@@ -1,0 +1,182 @@
+version: "3.8"
+
+services:
+  # 🟢 Your Banking API
+  api:
+    build: ./api
+    image: banking-api:local
+    container_name: banking_api
+    ports:
+      - "4000:3000"
+    networks:
+      - monitoring
+      - elk-net
+    restart: unless-stopped
+
+  # 🔍 Prometheus for metrics + alerting
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-lifecycle
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=1d
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+    depends_on:
+      - api
+      - node-exporter
+      - cadvisor
+      - alertmanager
+
+  # 📣 Alertmanager (handles alert notifications)
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+    ports:
+      - "9093:9093"
+    networks:
+      - monitoring
+
+  # 🧠 Node Exporter — system metrics
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    pid: "host"
+    ports:
+      - "9100:9100"
+    networks:
+      - monitoring
+
+  # 🐳 cAdvisor — Docker container metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8085:8080"
+    networks:
+      - monitoring
+
+  # 📊 Grafana dashboard
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3001:3000"
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+
+  # 🧱 Elasticsearch for ELK
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.8.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false # <--- disable security
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - elk-net
+
+  # 🔄 Logstash pipeline
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.8.0
+    container_name: logstash
+    volumes:
+      - ./elk/logstash/pipeline.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+    ports:
+      - "5000:5000"
+      - "5044:5044"
+    networks:
+      - elk-net
+
+  # 📈 Kibana for log visualization
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.8.0
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - elk-net
+    depends_on:
+      - elasticsearch
+
+  # 📦 Filebeat — ships container logs to ELK
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.8.0
+    container_name: filebeat
+    user: root
+    volumes:
+      - ./elk/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - elk-net
+      - monitoring
+
+  # ⚙️ Jenkins for CI/CD
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    container_name: jenkins
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - monitoring
+      - elk-net
+
+  # 🧾 Optional Webhook Receiver (for demo alerts)
+  webhook:
+    image: python:3.11-slim
+    container_name: webhook
+    command: python webhook_receiver.py
+    working_dir: /app
+    volumes:
+      - ./monitoring:/app
+    ports:
+      - "9000:9000"
+    networks:
+      - monitoring
+
+# 🗃️ Volumes
+volumes:
+  esdata:
+  jenkins_home:
+
+# 🌐 Networks
+networks:
+  monitoring:
+  elk-net:

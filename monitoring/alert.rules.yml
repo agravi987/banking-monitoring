@@ -1,0 +1,19 @@
+groups:
+  - name: banking_alerts
+    rules:
+      - alert: BankingApiDown
+        expr: probe_success{job="blackbox"} == 0 or up{job="banking_api"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Banking API down"
+          description: "Prometheus shows banking_api is down for >30s"
+
+      - alert: HighErrorRate
+        expr: increase(http_request_duration_ms_count{route="/maybe-down", code="500"}[1m]) > 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 500 rate on /maybe-down"
